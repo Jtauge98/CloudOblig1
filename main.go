@@ -13,6 +13,9 @@ import (
 	"time"
 )
 
+// Configuration constants used throughout the service.
+// These define API versioning, default server settings,
+// upstream timeouts, concurrency limits, and default upstream endpoints.
 const (
 	apiVersion                = "v1"
 	defaultPort               = "8080"
@@ -23,6 +26,9 @@ const (
 	defaultCurrencyServiceURL = "http://129.241.150.113:9090"
 )
 
+// Runtime variables initialized at startup.
+// These include service start time, resolved upstream base URLs,
+// shared HTTP client configuration, and country code validation pattern.
 var (
 	startTime = time.Now()
 
@@ -34,6 +40,8 @@ var (
 	countryCodeRe = regexp.MustCompile(`^[A-Za-z]{2}$`)
 )
 
+// RestCountry represents the subset of fields retrieved
+// from the RestCountries upstream API that are required by this service.
 type RestCountry struct {
 	Name struct {
 		Common string `json:"common"`
@@ -56,15 +64,21 @@ type RestCountry struct {
 	} `json:"currencies"`
 }
 
+// CurrencyResponse represents exchange rate data returned
+// by the upstream currency service.
 type CurrencyResponse struct {
 	Base  string             `json:"base"`
 	Rates map[string]float64 `json:"rates"`
 }
 
+// errorResponse defines the standard JSON structure
+// used when returning error messages to clients.
 type errorResponse struct {
 	Error string `json:"error"`
 }
 
+// statusResponse represents the response payload
+// for the service status endpoint.
 type statusResponse struct {
 	RestCountriesAPI int    `json:"restcountriesapi"`
 	CurrenciesAPI    int    `json:"currenciesapi"`
@@ -72,6 +86,8 @@ type statusResponse struct {
 	UptimeSeconds    int    `json:"uptime"`
 }
 
+// infoResponse defines the structured country information
+// returned by the info endpoint.
 type infoResponse struct {
 	Name       string            `json:"name"`
 	Continents []string          `json:"continents"`
@@ -83,12 +99,17 @@ type infoResponse struct {
 	Capital    string            `json:"capital"`
 }
 
+// exchangeResponse defines the response structure
+// returned by the exchange rates endpoint.
 type exchangeResponse struct {
 	Country       string             `json:"country"`
 	BaseCurrency  string             `json:"base-currency"`
 	ExchangeRates map[string]float64 `json:"exchange-rates"`
 }
 
+// main sets up HTTP routes and starts the web server.
+// The server port is resolved from the PORT environment variable
+// to support both local and cloud deployment.
 func main() {
 	mux := http.NewServeMux()
 
@@ -102,6 +123,8 @@ func main() {
 	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
 
+// envOrDefault retrieves an environment variable value,
+// returning a default if the variable is not set.
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -109,6 +132,7 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
+// writeJSON writes a JSON-encoded response with the specified HTTP status code.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
@@ -119,44 +143,54 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
+// writeError is a convenience helper for returning standardized JSON error responses.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, errorResponse{Error: msg})
 }
 
+// pathAfter extracts the URL path segment following a specified prefix.
+// Used to retrieve dynamic parameters such as country codes.
 func pathAfter(prefix, path string) string {
 	p := strings.TrimPrefix(path, prefix)
 	return strings.Trim(p, "/")
 }
 
+// validateCode verifies that the provided country code
+// matches the expected ISO alpha-2 format.
 func validateCode(code string) bool {
 	return countryCodeRe.MatchString(code)
 }
 
+// statusHandler reports the health of the upstream services
+// and returns the current uptime of this API.
 func statusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
+			"error": "method not allowed",
+		})
 		return
 	}
 
-	uptime := int(time.Since(startTime).Seconds())
+	restStatus := checkAPI(r.Context(), restCountriesBaseURL)
+	curStatus := checkAPI(r.Context(), currencyBaseURL)
 
-	restStatus := checkAPI(r.Context(), restCountriesBaseURL+"/v3.1/all")
-	curStatus := checkAPI(r.Context(), currencyBaseURL+"/currency/NOK")
-
-	// 200 kun når alt er OK, ellers 503 (tjenesten er oppe, men avhengigheter feiler)
-	statusCode := http.StatusOK
+	status := http.StatusOK
 	if restStatus != http.StatusOK || curStatus != http.StatusOK {
-		statusCode = http.StatusServiceUnavailable
+		status = http.StatusServiceUnavailable
 	}
 
-	writeJSON(w, statusCode, statusResponse{
-		RestCountriesAPI: restStatus,
-		CurrenciesAPI:    curStatus,
-		Version:          apiVersion,
-		UptimeSeconds:    uptime,
-	})
+	resp := map[string]interface{}{
+		"restcountriesapi": restStatus,
+		"currenciesapi":    curStatus,
+		"version":          apiVersion,
+		"uptime":           int(time.Since(startTime).Seconds()),
+	}
+
+	writeJSON(w, status, resp)
 }
 
+// infoHandler retrieves and returns country information
+// based on an ISO alpha-2 country code.
 func infoHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -165,7 +199,9 @@ func infoHandler(w http.ResponseWriter, r *http.Request) {
 
 	code := pathAfter("/countryinfo/v1/info/", r.URL.Path)
 	if code == "" {
-		writeError(w, http.StatusBadRequest, "missing country code")
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "missing country code. Example: /countryinfo/v1/info/no",
+		})
 		return
 	}
 	if !validateCode(code) {
@@ -175,11 +211,18 @@ func infoHandler(w http.ResponseWriter, r *http.Request) {
 
 	country, status, err := fetchCountry(r.Context(), code)
 	if err != nil {
-		log.Printf("fetchCountry failed: code=%s status=%d err=%v", code, status, err)
-		if status == 0 {
-			status = http.StatusBadGateway
+		log.Println(err)
+
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeJSON(w, http.StatusGatewayTimeout, map[string]string{
+				"error": "upstream service timeout",
+			})
+			return
 		}
-		writeError(w, status, "failed to fetch country")
+
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "upstream service unavailable",
+		})
 		return
 	}
 	if status == http.StatusNotFound || country == nil {
@@ -204,6 +247,9 @@ func infoHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// exchangeHandler returns exchange rates between the country's
+// base currency and the currencies used by its neighboring countries.
+// Neighbor data is fetched with controlled concurrency.
 func exchangeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -212,7 +258,9 @@ func exchangeHandler(w http.ResponseWriter, r *http.Request) {
 
 	code := pathAfter("/countryinfo/v1/exchange/", r.URL.Path)
 	if code == "" {
-		writeError(w, http.StatusBadRequest, "missing country code")
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "missing country code. Example: /countryinfo/v1/exchange/no",
+		})
 		return
 	}
 	if !validateCode(code) {
@@ -222,11 +270,18 @@ func exchangeHandler(w http.ResponseWriter, r *http.Request) {
 
 	country, status, err := fetchCountry(r.Context(), code)
 	if err != nil {
-		log.Printf("fetchCountry failed: code=%s status=%d err=%v", code, status, err)
-		if status == 0 {
-			status = http.StatusBadGateway
+		log.Println(err)
+
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeJSON(w, http.StatusGatewayTimeout, map[string]string{
+				"error": "upstream service timeout",
+			})
+			return
 		}
-		writeError(w, status, "failed to fetch country")
+
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "upstream service unavailable",
+		})
 		return
 	}
 	if status == http.StatusNotFound || country == nil {
@@ -254,6 +309,12 @@ func exchangeHandler(w http.ResponseWriter, r *http.Request) {
 	rates, err := fetchExchangeRates(r.Context(), base)
 	if err != nil {
 		log.Printf("fetchExchangeRates failed: base=%s err=%v", base, err)
+
+		if errors.Is(err, context.DeadlineExceeded) {
+			writeError(w, http.StatusGatewayTimeout, "upstream service timeout")
+			return
+		}
+
 		writeError(w, http.StatusBadGateway, "failed to fetch exchange rates")
 		return
 	}
@@ -274,6 +335,8 @@ func exchangeHandler(w http.ResponseWriter, r *http.Request) {
 
 var errUpstream = errors.New("upstream error")
 
+// fetchCountry calls the RestCountries upstream API
+// and returns the first matching country result.
 func fetchCountry(ctx context.Context, code string) (*RestCountry, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, upstreamTimeout)
 	defer cancel()
@@ -315,6 +378,8 @@ func pickFirstCurrency(currencies map[string]struct {
 	return ""
 }
 
+// fetchNeighborCurrencies collects currencies from neighboring countries.
+// Concurrency is limited using a semaphore to prevent excessive upstream calls.
 func fetchNeighborCurrencies(ctx context.Context, borders []string, base string) map[string]struct{} {
 	set := make(map[string]struct{})
 
@@ -352,6 +417,8 @@ func fetchNeighborCurrencies(ctx context.Context, borders []string, base string)
 	return set
 }
 
+// fetchExchangeRates retrieves exchange rate data
+// for a given base currency from the currency service.
 func fetchExchangeRates(ctx context.Context, baseCurrency string) (CurrencyResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, upstreamTimeout)
 	defer cancel()
@@ -381,6 +448,8 @@ func fetchExchangeRates(ctx context.Context, baseCurrency string) (CurrencyRespo
 	return data, nil
 }
 
+// checkAPI performs a health check against an upstream service
+// using a context with timeout and returns the resulting HTTP status code.
 func checkAPI(ctx context.Context, url string) int {
 	ctx, cancel := context.WithTimeout(ctx, upstreamTimeout)
 	defer cancel()
