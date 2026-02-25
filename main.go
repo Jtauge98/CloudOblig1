@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -77,15 +78,6 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-// statusResponse represents the response payload
-// for the service status endpoint.
-type statusResponse struct {
-	RestCountriesAPI int    `json:"restcountriesapi"`
-	CurrenciesAPI    int    `json:"currenciesapi"`
-	Version          string `json:"version"`
-	UptimeSeconds    int    `json:"uptime"`
-}
-
 // infoResponse defines the structured country information
 // returned by the info endpoint.
 type infoResponse struct {
@@ -113,9 +105,21 @@ type exchangeResponse struct {
 func main() {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/countryinfo/v1/status", statusHandler)
+	// Spec uses trailing slashes on resource roots.
+	mux.HandleFunc("/countryinfo/v1/status/", statusHandler)
 	mux.HandleFunc("/countryinfo/v1/info/", infoHandler)
 	mux.HandleFunc("/countryinfo/v1/exchange/", exchangeHandler)
+
+	// Optional quality-of-life redirects for missing trailing slash.
+	mux.HandleFunc("/countryinfo/v1/status", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/countryinfo/v1/status/", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("/countryinfo/v1/info", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/countryinfo/v1/info/", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("/countryinfo/v1/exchange", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/countryinfo/v1/exchange/", http.StatusMovedPermanently)
+	})
 
 	port := envOrDefault("PORT", defaultPort)
 
@@ -165,14 +169,19 @@ func validateCode(code string) bool {
 // and returns the current uptime of this API.
 func statusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
-			"error": "method not allowed",
-		})
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	restStatus := checkAPI(r.Context(), restCountriesBaseURL)
-	curStatus := checkAPI(r.Context(), currencyBaseURL)
+	// Ensure we're on the canonical path (spec uses trailing slash).
+	if r.URL.Path != "/countryinfo/v1/status/" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	// Use stable upstream endpoints to avoid false negatives (root URLs may return 404).
+	restStatus := checkAPI(r.Context(), restCountriesBaseURL+"/v3.1/alpha/no")
+	curStatus := checkAPI(r.Context(), currencyBaseURL+"/currency/NOK")
 
 	status := http.StatusOK
 	if restStatus != http.StatusOK || curStatus != http.StatusOK {
@@ -205,7 +214,7 @@ func infoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validateCode(code) {
-		writeError(w, http.StatusBadRequest, "invalid country code (expected alpha-2 or alpha-3)")
+		writeError(w, http.StatusBadRequest, "invalid country code (expected ISO 3166-1 alpha-2, e.g. no)")
 		return
 	}
 
@@ -264,7 +273,7 @@ func exchangeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validateCode(code) {
-		writeError(w, http.StatusBadRequest, "invalid country code (expected alpha-2 or alpha-3)")
+		writeError(w, http.StatusBadRequest, "invalid country code (expected ISO 3166-1 alpha-2, e.g. no)")
 		return
 	}
 
@@ -352,7 +361,12 @@ func fetchCountry(ctx context.Context, code string) (*RestCountry, int, error) {
 	if err != nil {
 		return nil, http.StatusBadGateway, err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, http.StatusNotFound, nil
@@ -434,7 +448,12 @@ func fetchExchangeRates(ctx context.Context, baseCurrency string) (CurrencyRespo
 	if err != nil {
 		return CurrencyResponse{}, err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return CurrencyResponse{}, errUpstream
@@ -463,7 +482,12 @@ func checkAPI(ctx context.Context, url string) int {
 	if err != nil {
 		return http.StatusBadGateway
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	return resp.StatusCode
 }
