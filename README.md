@@ -1,6 +1,5 @@
 # CountryInfo – Cloud Assignment 1
 
-Test1
 
 This project is part of Cloud Technologies assignment 1.
 
