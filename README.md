@@ -1,5 +1,7 @@
 # CountryInfo – Cloud Assignment 1
 
+Test
+
 This project is part of Cloud Technologies assignment 1.
 
 The service is written in Go and exposes a REST API that combines data from two upstream services:
