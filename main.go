@@ -113,7 +113,7 @@ type exchangeResponse struct {
 func main() {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/countryinfo/v1/status/", statusHandler)
+	mux.HandleFunc("/countryinfo/v1/status", statusHandler)
 	mux.HandleFunc("/countryinfo/v1/info/", infoHandler)
 	mux.HandleFunc("/countryinfo/v1/exchange/", exchangeHandler)
 
