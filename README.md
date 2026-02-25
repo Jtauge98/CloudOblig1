@@ -16,7 +16,7 @@ The API provides three main endpoints:
 
 ## How to run locally
 
-Make sure you have Go 1.22 installed.
+Make sure you have Go 1.22 or newer versions installed.
 
 Start the server:
 
