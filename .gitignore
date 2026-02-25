@@ -1,0 +1,16 @@
+# Binaries
+*.exe
+*.out
+*.test
+
+# Go build artifacts
+/bin/
+/build/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
